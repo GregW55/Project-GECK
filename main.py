@@ -15,7 +15,7 @@ drom dotenv import load_dotenv
 !pump on/off
 """
 # --- LOAD SECRETS ---
-load_dotenv() # This reads the .env file
+load_dotenv()
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv('DISCORD_TOKEN')
