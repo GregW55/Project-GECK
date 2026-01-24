@@ -6,7 +6,7 @@ from datetime import datetime
 from kasa import SmartPlug, Discover
 from gpiozero import InputDevice, OutputDevice
 import os
-drom dotenv import load_dotenv
+from dotenv import load_dotenv
 """
 --- COMMANDS ---
 !photo
