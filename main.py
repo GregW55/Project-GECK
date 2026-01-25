@@ -207,8 +207,8 @@ async def discord_send(channel_id: int, content: str = None, file_path: str = No
             if content:
                 await chan.send(content)
     except Exception as e:
-    # Don't let Discord failures kill automation
-    print(f"Discord send failed: {e}")
+        # Don't let Discord failures kill automation
+        print(f"Discord send failed: {e}")
 
 # --- BOT EVENTS ---
 @bot.event
@@ -233,7 +233,7 @@ async def status(ctx):
     dht = DHT11(HUMITURE_PIN)
     hum, temp = dht.read_data()
 
-     # Safe formatting
+    # Safe formatting
     temp_s = "ERR" if temp is None else f"{temp:.1f}F"
     hum_s = "ERR" if hum is None else f"{hum:.1f}%"
 
@@ -295,16 +295,25 @@ async def automation_runner():
 
     print("Automation runner started (Discord optional).")
 
-    last_discovery = 0.0
+    #last_discovery = 0.0
+    next_discovery_ts = 0.0  # Discover immediately on boot
     last_hour_sent = -1
 
     while True:
         now = datetime.now()
+        now_ts = time.monotonic()
 
         # Periodically retry discovery so Kasa can come/go without requiring Discord
-        if (time.time() - last_discovery) > DISCOVERY_RETRY_SECONDS:
+        if now_ts >= next_discovery_ts:
+            # If we don't have a plug, force a full scan
             await ensure_plugs_connected(force=(LIGHT_PLUG is None))
-            last_discovery = time.time()
+
+            # Decide the next interval based on whether we're "healthy"
+            if LIGHT_PLUG is not None:
+                next_discovery_ts = now_ts + DISCOVERY_RETRY_SECONDS   # 11 hours
+            else:
+                next_discovery_ts = now_ts + BROKEN_DISCOVERY_SECONDS  # 30 minutes
+
 
         # 1 Sensor
         dht = DHT11(HUMITURE_PIN)
@@ -328,10 +337,11 @@ async def automation_runner():
         elif LIGHT_PLUG and not OVERRIDE_LIGHT:
             try:
                 await LIGHT_PLUG.update()
-                if (LIGHT_START <= now.hour < LIGHT_END) and not LIGHT_PLUG.is_on:
-                    await LIGHT_PLUG.turn_on()
-                    print("Lights auto-ON")
-                    await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-ON")
+                if LIGHT_START <= now.hour < LIGHT_END:
+                    if not LIGHT_PLUG.is_on:
+                        await LIGHT_PLUG.turn_on()
+                        print("Lights auto-ON")
+                        await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-ON")
 
                 else:
                     if LIGHT_PLUG.is_on:
