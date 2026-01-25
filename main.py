@@ -1,9 +1,9 @@
 import asyncio
 import discord
 import time
-from discord.ext import commands, tasks
+from discord.ext import commands
 from datetime import datetime
-from kasa import SmartPlug, Discover
+from kasa import Discover
 from gpiozero import InputDevice, OutputDevice
 import os
 from dotenv import load_dotenv
