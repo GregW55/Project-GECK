@@ -47,7 +47,8 @@ LAST_PHOTO_PATH = None
 LAST_PHOTO_TS = None
 
 # How often to retry finding Kasa devices if missing/offline
-DISCOVERY_RETRY_SECONDS = 18000  # 300 minutes
+DISCOVERY_RETRY_SECONDS = 11 * 60 * 60  # 11 hours
+BROKEN_DISCOVERY_SECONDS = 30 * 60      # 30 minutes
 
 # --- DISCOVERY FUNCTION ---
 async def get_plugs_by_name():
@@ -305,52 +306,52 @@ async def automation_runner():
             await ensure_plugs_connected(force=(LIGHT_PLUG is None))
             last_discovery = time.time()
 
-    # 1 Sensor
-    dht = DHT11(HUMITURE_PIN)
-    hum, temp = dht.read_data()
+        # 1 Sensor
+        dht = DHT11(HUMITURE_PIN)
+        hum, temp = dht.read_data()
 
-    # 2 Overheat safety (local action first)
-    if temp is not None and temp > 80.0:
-        # Try to kill lights locally
-        if LIGHT_PLUG:
+        # 2 Overheat safety (local action first)
+        if temp is not None and temp > 80.0:
+            # Try to kill lights locally
+            if LIGHT_PLUG:
+                try:
+                    await LIGHT_PLUG.turn_off()
+                except Exception:
+                    pass
+            # Optional Discord notification
+            await discord_send(
+                CHANNEL_EMERGENCY_ID,
+                f"@everyone **OVERHEAT:** {temp:.1f}F! Killing Lights."
+            )
+
+        # 3 Light schedule (local control)
+        elif LIGHT_PLUG and not OVERRIDE_LIGHT:
             try:
-                await LIGHT_PLUG.turn_off()
+                await LIGHT_PLUG.update()
+                if (LIGHT_START <= now.hour < LIGHT_END) and not LIGHT_PLUG.is_on:
+                    await LIGHT_PLUG.turn_on()
+                    print("Lights auto-ON")
+                    await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-ON")
+
+                else:
+                    if LIGHT_PLUG.is_on:
+                        await LIGHT_PLUG.turn_off()
+                        print("Lights Auto-OFF")
+                        await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-OFF")
             except Exception:
                 pass
-        # Optional Discord notification
-        await discord_send(
-            CHANNEL_EMERGENCY_ID,
-            f"@everyone **OVERHEAT:** {temp:.1f}F! Killing Lights."
-        )
 
-    # 3 Light schedule (local control)
-    elif LIGHT_PLUG and not OVERRIDE_LIGHT:
-        try:
-            await LIGHT_PLUG.update()
-            if (LIGHT_START <= now.hour < LIGHT_END) and not LIGHT_PLUG.is_on:
-                await LIGHT_PLUG.turn_on()
-                print("Lights auto-ON")
-                await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-ON")
-
-            else:
-                if LIGHT_PLUG.is_on:
-                    await LIGHT_PLUG.turn_off()
-                    print("Lights Auto-OFF")
-                    await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-OFF")
-        except Exception:
-            pass
-
-    # 4 Hourly photo (local action first, Discord optional)
-    if now.minute == 0 and now.hour != last_hour_sent:
-        filename = await take_photo_logic()
-        if filename:
-            await discord_send(
-                CHANNEL_IMAGES_ID,
-                f"📷 Hourly Update: {now.strftime('%I:%M %p')}",
-                file_path=filename
-            )
-        last_hour_sent = now.hour
-    await asyncio.sleep(10)
+        # 4 Hourly photo (local action first, Discord optional)
+        if now.minute == 0 and now.hour != last_hour_sent:
+            filename = await take_photo_logic()
+            if filename:
+                await discord_send(
+                    CHANNEL_IMAGES_ID,
+                    f"📷 Hourly Update: {now.strftime('%I:%M %p')}",
+                    file_path=filename
+                )
+            last_hour_sent = now.hour
+        await asyncio.sleep(10)
 
 # --- DISCORD RUNNER (RECONNECTS) ---
 async def discord_runner():
