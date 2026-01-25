@@ -20,6 +20,7 @@ The system is fully integrated with **Discord**, allowing for remote monitoring 
 * **Camera:** Raspberry Pi Camera Module 3 (or compatible)
 * **Power Control:** TP-Link Kasa Smart Plugs (WiFi)
 * **Hydroponics:** 12V Submersible Pump & Grow Lights
+* **Optional Display:** I2C LCD1602 (PCF8574 backpack)
 
 ## 💻 Tech Stack
 * **Python 3.11+**
@@ -45,13 +46,18 @@ The system is fully integrated with **Discord**, allowing for remote monitoring 
 
 2.  **Install Dependencies**
     ```bash
-    pip install discord.py python-kasa gpiozero rpi-lgpio
+    pip install discord.py python-kasa gpiozero rpi-lgpio smbus2
     ```
 
 3.  **Configuration**
     * Open `main.py` and insert your **Discord Bot Token**.
     * Update the `CHANNEL_ID` variables with your Discord Channel IDs.
     * Ensure your Kasa Plugs are named exactly `"Lights"` and `"Pump plug"` in the Kasa App.
+    * (Optional) Enable the LCD1602 output:
+      * `LCD_ENABLED=1`
+      * `LCD_I2C_ADDR=0x27` (or `0x3f`)
+      * `LCD_BACKLIGHT=1`
+      * `LCD_CYCLE_SECONDS=5`
 
 4.  **Run the GECK**
     ```bash
