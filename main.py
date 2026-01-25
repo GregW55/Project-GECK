@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 !photo
 !status
 !light on/off
-!pump on/off
 !auto
 """
 
@@ -30,11 +29,10 @@ CHANNEL_IMAGES_ID = int(os.getenv('CHANNEL_IMAGES'))
 
 # --- HARDWARE CONFIGURATION ---
 HUMITURE_PIN = 17
+
 LIGHT_NAME = "Lights"
-PUMP_NAME = "Pump plug"
 LIGHT_START = 8
 LIGHT_END = 20
-PUMP_MINUTES = 15
 
 # --- SETUP BOT ---
 intents = discord.Intents.default()
@@ -42,11 +40,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # --- GLOBAL VARIABLES ---
-PLUG_LIGHT = None
-PLUG_PUMP = None
-
+LIGHT_PLUG = None
 OVERRIDE_LIGHT = False
-OVERRIDE_PUMP = False
 
 LAST_PHOTO_PATH = None
 LAST_PHOTO_TS = None
@@ -60,7 +55,6 @@ async def get_plugs_by_name():
     found_devices = await Discover.discover()
 
     light = None
-    pump = None
 
     for ip, device in found_devices.items():
         try:
@@ -68,32 +62,25 @@ async def get_plugs_by_name():
             print(f"Found: {device.alias} at {ip}")
             if device.alias == LIGHT_NAME:
                 light = device
-            elif device.alias == PUMP_NAME:
-                pump = device
         except Exception as e:
             print(f"Failed updating device at {ip}: {e}")
-    return light, pump
+    return light
 
 async def ensure_plugs_connected(force=False):
-    """Ensure PLUG_LIGHT/PLUG_PUMP are set. Retry discovery occasionally."""
-    global PLUG_LIGHT, PLUG_PUMP
+    """Ensure LIGHT_PLUG is set. Retry discovery occasionally."""
+    global LIGHT_PLUG
 
-    if force or PLUG_LIGHT is None or PLUG_PUMP is None:
-        light, pump = await get_plugs_by_name()
-        PLUG_LIGHT = light or PLUG_LIGHT
-        PLUG_PUMP = pump or PLUG_PUMP
+    if force or LIGHT_PLUG is None:
+        light = await get_plugs_by_name()
+        LIGHT_PLUG = light or LIGHT_PLUG
 
     # Optional: sanity check by calling update() (won't crash automation)
-    if PLUG_LIGHT:
+    if LIGHT_PLUG:
         try:
-            await PLUG_LIGHT.update()
+            await LIGHT_PLUG.update()
         except Exception:
             pass
-    if PLUG_PUMP:
-        try:
-            await PLUG_PUMP.update()
-        except Exception:
-            pass
+
 
 # --- SENSOR CLASS ---
 class DHT11:
@@ -235,9 +222,8 @@ async def on_ready():
 @bot.command()
 async def auto(ctx):
     """Resumes the Schedule (Disables Manual Mode)"""
-    global OVERRIDE_LIGHT, OVERRIDE_PUMP
+    global OVERRIDE_LIGHT
     OVERRIDE_LIGHT = False
-    OVERRIDE_PUMP = False
     await ctx.send("**Automation Resumed.** Schedule is back in control.")
 
 
@@ -253,10 +239,10 @@ async def status(ctx):
     l_state = "Offline"
     l_mode = "**MANUAL**" if OVERRIDE_LIGHT else "**AUTO**"
 
-    if PLUG_LIGHT:
+    if LIGHT_PLUG:
         try:
-            await PLUG_LIGHT.update()
-            l_state = "ON" if PLUG_LIGHT.is_on else "OFF"
+            await LIGHT_PLUG.update()
+            l_state = "ON" if LIGHT_PLUG.is_on else "OFF"
         except Exception:
             l_state = "Offline"
 
@@ -281,17 +267,17 @@ async def photo(ctx):
 @bot.command()
 async def light(ctx, state: str):
     global OVERRIDE_LIGHT
-    if not PLUG_LIGHT:
+    if not LIGHT_PLUG:
         return await ctx.send("Light plug not connected.")
 
     OVERRIDE_LIGHT = True
 
     try:
         if state.lower() == "on":
-            await PLUG_LIGHT.turn_on()
+            await LIGHT_PLUG.turn_on()
             await ctx.send("Light forced **ON** (Manual Mode Active)")
         elif state.lower() == "off":
-            await PLUG_LIGHT.turn_off()
+            await LIGHT_PLUG.turn_off()
             await ctx.send("Light forced **OFF** (Manual Mode Active)")
         else:
             await ctx.send("Usage: '!light on' or '!light off'")
@@ -316,7 +302,7 @@ async def automation_runner():
 
         # Periodically retry discovery so Kasa can come/go without requiring Discord
         if (time.time() - last_discovery) > DISCOVERY_RETRY_SECONDS:
-            await ensure_plugs_connected(force=(PLUG_LIGHT is None))
+            await ensure_plugs_connected(force=(LIGHT_PLUG is None))
             last_discovery = time.time()
 
     # 1 Sensor
@@ -326,9 +312,9 @@ async def automation_runner():
     # 2 Overheat safety (local action first)
     if temp is not None and temp > 80.0:
         # Try to kill lights locally
-        if PLUG_LIGHT:
+        if LIGHT_PLUG:
             try:
-                await PLUG_LIGHT.turn_off()
+                await LIGHT_PLUG.turn_off()
             except Exception:
                 pass
         # Optional Discord notification
@@ -338,17 +324,17 @@ async def automation_runner():
         )
 
     # 3 Light schedule (local control)
-    elif PLUG_LIGHT and not OVERRIDE_LIGHT:
+    elif LIGHT_PLUG and not OVERRIDE_LIGHT:
         try:
-            await PLUG_LIGHT.update()
-            if (LIGHT_START <= now.hour < LIGHT_END) and not PLUG_LIGHT.is_on:
-                await PLUG_LIGHT.turn_on()
+            await LIGHT_PLUG.update()
+            if (LIGHT_START <= now.hour < LIGHT_END) and not LIGHT_PLUG.is_on:
+                await LIGHT_PLUG.turn_on()
                 print("Lights auto-ON")
                 await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-ON")
 
             else:
-                if PLUG_LIGHT.is_on:
-                    await PLUG_LIGHT.turn_off()
+                if LIGHT_PLUG.is_on:
+                    await LIGHT_PLUG.turn_off()
                     print("Lights Auto-OFF")
                     await discord_send(CHANNEL_GENERAL_ID, "Lights Auto-OFF")
         except Exception:
