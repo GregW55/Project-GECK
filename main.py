@@ -7,6 +7,7 @@ from kasa import Discover
 from gpiozero import InputDevice, OutputDevice
 import os
 from dotenv import load_dotenv
+import LCD1602
 
 """
 --- COMMANDS ---
@@ -34,6 +35,12 @@ LIGHT_NAME = "Lights"
 LIGHT_START = 8
 LIGHT_END = 20
 
+LCD_ENABLED = True
+LCD_OK = False
+LCD_I2C_ADDR = 0x27
+LCD_BACKLIGHT = 1
+LCD_CYCLE_SECONDS = 5
+
 # --- SETUP BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -48,7 +55,8 @@ LAST_PHOTO_TS = None
 
 # How often to retry finding Kasa devices if missing/offline
 DISCOVERY_RETRY_SECONDS = 11 * 60 * 60  # 11 hours
-BROKEN_DISCOVERY_SECONDS = 30 * 60      # 30 minutes
+BROKEN_DISCOVERY_SECONDS = 30 * 60  # 30 minutes
+
 
 # --- DISCOVERY FUNCTION ---
 async def get_plugs_by_name():
@@ -66,6 +74,7 @@ async def get_plugs_by_name():
         except Exception as e:
             print(f"Failed updating device at {ip}: {e}")
     return light
+
 
 async def ensure_plugs_connected(force=False):
     """Ensure LIGHT_PLUG is set. Retry discovery occasionally."""
@@ -157,6 +166,49 @@ class DHT11:
             return None, None
 
 
+def build_lcd_screen(temp, hum, light_state, light_mode, now):
+    temp_s = "ERR" if temp is None else f"{temp:.1f}F"
+    hum_s = "ERR" if hum is None else f"{hum:.1f}%"
+    time_line = now.strftime("Time %I:%M %p").lstrip("0")
+    date_line = now.strftime("%m/%d/%Y")
+
+    return [
+        (f"Temp: {temp_s}", f"Hum: {hum_s}"),
+        (f"Light: {light_state}", f"Mode: {light_mode}"),
+        (time_line, date_line),
+    ]
+
+def format_lcd_line(text):
+    return text.ljust(16)[:16]
+
+def lcd_write_screen(line1: str, line2: str):
+    """Write two 16-char lines to LCD1602 safely."""
+    global LCD_OK
+    if not LCD_ENABLED or not LCD_OK:
+        return
+    try:
+        LCD1602.write(0, 0, format_lcd_line(line1))
+        LCD1602.write(0, 1, format_lcd_line(line2))
+    except Exception as e:
+        LCD_OK = False
+        print(f"LCD write failed (disabling): {e}")
+
+def lcd_init_once():
+    """Init LCD and show boot message"""
+    global LCD_OK
+    if not LCD_ENABLED:
+        return
+    try:
+        ok = LCD1602.init(LCD_I2C_ADDR, LCD_BACKLIGHT)
+        if not ok:
+            raise RuntimeError("LCD1602.init() returned False")
+        LCD1602.clear()
+        LCD_OK = True
+        lcd_write_screen("Hydroponics", "Booting...")
+    except Exception as e:
+        LCD_OK = False
+        print(f"LCD init failed: {e}")
+
 # --- HELPER: CAMERA ---
 async def take_photo_logic():
     global LAST_PHOTO_PATH, LAST_PHOTO_TS
@@ -210,6 +262,7 @@ async def discord_send(channel_id: int, content: str = None, file_path: str = No
         # Don't let Discord failures kill automation
         print(f"Discord send failed: {e}")
 
+
 # --- BOT EVENTS ---
 @bot.event
 async def on_ready():
@@ -251,7 +304,7 @@ async def status(ctx):
            f"🌡️ Temp: `{temp_s}`\n"
            f"💧 Humidity: `{hum_s}`\n"
            f"☀️ Light: `{l_state}` ({l_mode})\n"
-    )
+           )
     await ctx.send(msg)
 
 
@@ -285,6 +338,7 @@ async def light(ctx, state: str):
     except Exception as e:
         await ctx.send(f"Failed: {e}")
 
+
 # --- AUTOMATION LOOP ---
 async def automation_runner():
     """
@@ -295,45 +349,44 @@ async def automation_runner():
 
     print("Automation runner started (Discord optional).")
 
-    #last_discovery = 0.0
     next_discovery_ts = 0.0  # Discover immediately on boot
     last_hour_sent = -1
+
+    lcd_screen_index = 0
+    next_lcd_update_ts = 0.0
+    lcd_init_once()
 
     while True:
         now = datetime.now()
         now_ts = time.monotonic()
 
-        # Periodically retry discovery so Kasa can come/go without requiring Discord
+        # --- Kasa discovery scheduling (11h healthy / 30m broken) ----
         if now_ts >= next_discovery_ts:
-            # If we don't have a plug, force a full scan
             await ensure_plugs_connected(force=(LIGHT_PLUG is None))
 
-            # Decide the next interval based on whether we're "healthy"
             if LIGHT_PLUG is not None:
-                next_discovery_ts = now_ts + DISCOVERY_RETRY_SECONDS   # 11 hours
+                next_discovery_ts = now_ts + DISCOVERY_RETRY_SECONDS  # 11 hours
             else:
                 next_discovery_ts = now_ts + BROKEN_DISCOVERY_SECONDS  # 30 minutes
 
-
-        # 1 Sensor
+        # --- DHT11 Sensor ---
         dht = DHT11(HUMITURE_PIN)
         hum, temp = dht.read_data()
 
-        # 2 Overheat safety (local action first)
+        # --- Overheat safety ---
         if temp is not None and temp > 80.0:
-            # Try to kill lights locally
             if LIGHT_PLUG:
                 try:
                     await LIGHT_PLUG.turn_off()
                 except Exception:
                     pass
-            # Optional Discord notification
+
             await discord_send(
                 CHANNEL_EMERGENCY_ID,
                 f"@everyone **OVERHEAT:** {temp:.1f}F! Killing Lights."
             )
 
-        # 3 Light schedule (local control)
+        # --- Light schedule ---
         elif LIGHT_PLUG and not OVERRIDE_LIGHT:
             try:
                 await LIGHT_PLUG.update()
@@ -351,7 +404,7 @@ async def automation_runner():
             except Exception:
                 pass
 
-        # 4 Hourly photo (local action first, Discord optional)
+        # --- Hourly photo ---
         if now.minute == 0 and now.hour != last_hour_sent:
             filename = await take_photo_logic()
             if filename:
@@ -361,7 +414,30 @@ async def automation_runner():
                     file_path=filename
                 )
             last_hour_sent = now.hour
+
+        # --- LCD update (cycles screens every LCD_CYCLE_SECONDS) ---
+        if LCD_ENABLED and LCD_OK and now_ts >= next_lcd_update_ts:
+            # Determine current light state for display
+            light_state = "NO PLUG"
+            if LIGHT_PLUG:
+                try:
+                    await LIGHT_PLUG.update()
+                    light_state = "ON" if LIGHT_PLUG.is_on else "OFF"
+                except Exception:
+                    light_state = "Offline"
+
+            light_mode = "MANUAL" if OVERRIDE_LIGHT else "AUTO"
+
+            screens = build_lcd_screen(temp, hum, light_state, light_mode, now)
+            line1, line2 = screens[lcd_screen_index]
+
+            lcd_write_screen(line1, line2)
+
+            lcd_screen_index = (lcd_screen_index + 1) % len(screens)
+            next_lcd_update_ts = now_ts + LCD_CYCLE_SECONDS
+
         await asyncio.sleep(10)
+
 
 # --- DISCORD RUNNER (RECONNECTS) ---
 async def discord_runner():
@@ -372,7 +448,7 @@ async def discord_runner():
     if not TOKEN:
         print("DISCORD_TOKEN missing, Discord bot will not run.")
         return
-    
+
     while True:
         try:
             print("Starting Discord Client...")
@@ -381,30 +457,31 @@ async def discord_runner():
             print(f" Discord client error/disconnect: {e}")
             # Wait a bit, then retry
             await asyncio.sleep(15)
-            
+
+
 # --- MAIN ---
 async def main():
     # Start automation first (always)
     automation_task = asyncio.create_task(automation_runner())
     # Start discord runner (optional)
     discord_task = asyncio.create_task(discord_runner())
-    
+
     # Wait forever (if one task dies, print why and keep the other alive)
     done, pending = await asyncio.wait(
         {automation_task, discord_task},
         return_when=asyncio.FIRST_EXCEPTION
     )
-    
+
     for task in done:
         try:
             task.result()
         except Exception as e:
             print(f"Task Crashed: {e}")
-    
+
     # Keep remaining tasks alive
     await asyncio.gather(*pending)
-    
-    
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
